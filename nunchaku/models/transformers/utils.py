@@ -1,0 +1,220 @@
+"""
+Utilities for Nunchaku transformer model loading.
+"""
+
+import json
+import logging
+import os
+from pathlib import Path
+
+import torch
+from diffusers import __version__
+from huggingface_hub import constants, hf_hub_download
+from torch import nn
+
+from ...utils import load_state_dict_in_safetensors
+from ..linear import SVDQW4A4Linear
+from ..linear_w8a16 import SVDQW8A16Linear
+
+# Get log level from environment variable (default to INFO)
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# Configure logging
+logging.basicConfig(level=getattr(logging, log_level, logging.INFO), format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+
+class NunchakuModelLoaderMixin:
+    """
+    Mixin for standardized model loading in Nunchaku transformer models.
+    """
+
+    @classmethod
+    def _build_model(
+        cls, pretrained_model_name_or_path: str | os.PathLike[str], **kwargs
+    ) -> tuple[nn.Module, dict[str, torch.Tensor], dict[str, str]]:
+        """
+        Build a transformer model from a safetensors file.
+
+        Parameters
+        ----------
+        pretrained_model_name_or_path : str or os.PathLike
+            Path to the safetensors file.
+        **kwargs
+            Additional keyword arguments (e.g., ``torch_dtype``).
+
+        Returns
+        -------
+        tuple
+            (transformer, state_dict, metadata)
+        """
+        if isinstance(pretrained_model_name_or_path, str):
+            pretrained_model_name_or_path = Path(pretrained_model_name_or_path)
+        state_dict, metadata = load_state_dict_in_safetensors(pretrained_model_name_or_path, return_metadata=True)
+
+        config = json.loads(metadata["config"])
+
+        with torch.device("meta"):
+            transformer = cls.from_config(config).to(kwargs.get("torch_dtype", torch.bfloat16))
+
+        return transformer, state_dict, metadata
+
+    @classmethod
+    def _build_model_legacy(
+        cls, pretrained_model_name_or_path: str | os.PathLike, **kwargs
+    ) -> tuple[nn.Module, str, str]:
+        """
+        Build a transformer model from a legacy folder structure.
+
+        .. warning::
+            This method is deprecated and will be removed in December 2025.
+            Please use :meth:`_build_model` instead.
+
+        Parameters
+        ----------
+        pretrained_model_name_or_path : str or os.PathLike
+            Path to the folder containing model weights.
+        **kwargs
+            Additional keyword arguments for HuggingFace Hub download and config loading.
+
+        Returns
+        -------
+        tuple
+            (transformer, unquantized_part_path, transformer_block_path)
+        """
+        logger.warning(
+            "Loading models from a folder will be deprecated in December 2025. "
+            "Please download the latest safetensors model, or use one of the following tools to "
+            "merge your model into a single file: the CLI utility `python -m nunchaku.merge_safetensors` "
+            "or the ComfyUI workflow `merge_safetensors.json`."
+        )
+        subfolder = kwargs.get("subfolder", None)
+        if os.path.exists(pretrained_model_name_or_path):
+            dirname = (
+                pretrained_model_name_or_path
+                if subfolder is None
+                else os.path.join(pretrained_model_name_or_path, subfolder)
+            )
+            unquantized_part_path = os.path.join(dirname, "unquantized_layers.safetensors")
+            transformer_block_path = os.path.join(dirname, "transformer_blocks.safetensors")
+        else:
+            download_kwargs = {
+                "subfolder": subfolder,
+                "repo_type": "model",
+                "revision": kwargs.get("revision", None),
+                "cache_dir": kwargs.get("cache_dir", None),
+                "local_dir": kwargs.get("local_dir", None),
+                "user_agent": kwargs.get("user_agent", None),
+                "force_download": kwargs.get("force_download", False),
+                "proxies": kwargs.get("proxies", None),
+                "etag_timeout": kwargs.get("etag_timeout", constants.DEFAULT_ETAG_TIMEOUT),
+                "token": kwargs.get("token", None),
+                "local_files_only": kwargs.get("local_files_only", None),
+                "headers": kwargs.get("headers", None),
+                "endpoint": kwargs.get("endpoint", None),
+                "resume_download": kwargs.get("resume_download", None),
+                "force_filename": kwargs.get("force_filename", None),
+                "local_dir_use_symlinks": kwargs.get("local_dir_use_symlinks", "auto"),
+            }
+            unquantized_part_path = hf_hub_download(
+                repo_id=str(pretrained_model_name_or_path), filename="unquantized_layers.safetensors", **download_kwargs
+            )
+            transformer_block_path = hf_hub_download(
+                repo_id=str(pretrained_model_name_or_path), filename="transformer_blocks.safetensors", **download_kwargs
+            )
+
+        cache_dir = kwargs.pop("cache_dir", None)
+        force_download = kwargs.pop("force_download", False)
+        proxies = kwargs.pop("proxies", None)
+        local_files_only = kwargs.pop("local_files_only", None)
+        token = kwargs.pop("token", None)
+        revision = kwargs.pop("revision", None)
+        config, _, _ = cls.load_config(
+            pretrained_model_name_or_path,
+            subfolder=subfolder,
+            cache_dir=cache_dir,
+            return_unused_kwargs=True,
+            return_commit_hash=True,
+            force_download=force_download,
+            proxies=proxies,
+            local_files_only=local_files_only,
+            token=token,
+            revision=revision,
+            user_agent={"diffusers": __version__, "file_type": "model", "framework": "pytorch"},
+            **kwargs,
+        )
+
+        with torch.device("meta"):
+            transformer = cls.from_config(config).to(kwargs.get("torch_dtype", torch.bfloat16))
+        return transformer, unquantized_part_path, transformer_block_path
+
+
+def patch_scale_key(transformer_from_config: nn.Module, state_dict_from_checkpoint: dict):
+    """
+    Modify scale parameters so that the state dict from the checkpoint file can be loaded to the transformer model created from the config.
+
+    Parameters
+    ----------
+    transformer_from_config : nn.Module
+        The transformer model created from the `config.json`
+    state_dict_from_checkpoint : dict
+        The state dict loaded from the checkpoint file (typically .safetensors)
+    """
+    state_dict = transformer_from_config.state_dict()
+    missing_keys = [k for k in state_dict.keys() if k not in state_dict_from_checkpoint]
+    if missing_keys:
+        w8a16_prefixes: set[str] = set()
+        for n, m in transformer_from_config.named_modules():
+            if isinstance(m, SVDQW8A16Linear):
+                w8a16_prefixes.add(n)
+
+        if w8a16_prefixes:
+            filtered: list[str] = []
+            for k in missing_keys:
+                if not k.endswith((".qweight", ".wscales", ".bias")):
+                    filtered.append(k)
+                    continue
+                module_name = k.rsplit(".", 1)[0]
+                if (
+                    k.endswith(".bias")
+                    and module_name in w8a16_prefixes
+                    and (module_name + ".qweight") in state_dict_from_checkpoint
+                    and (module_name + ".wscales") in state_dict_from_checkpoint
+                ):
+                    state_dict_from_checkpoint[k] = torch.zeros_like(state_dict[k])
+                    continue
+                if module_name in w8a16_prefixes and (module_name + ".weight") in state_dict_from_checkpoint:
+                    continue
+                filtered.append(k)
+            missing_keys = filtered
+
+        missing_wcscales = [k for k in missing_keys if ".wcscales" in k]
+        missing_other = [k for k in missing_keys if ".wcscales" not in k]
+
+        for k in missing_wcscales:
+            state_dict_from_checkpoint[k] = torch.ones_like(state_dict[k])
+
+        if missing_other:
+            preview = "\n".join(missing_other[:20])
+            raise KeyError(
+                "Checkpoint is missing keys required by the patched model. "
+                "This usually means the checkpoint layout does not match the current quantization backend. "
+                f"Missing keys (first 20):\n{preview}"
+            )
+
+    for n, m in transformer_from_config.named_modules():
+        if isinstance(m, SVDQW4A4Linear) and m.wtscale is not None:
+            m.wtscale = state_dict_from_checkpoint.pop(f"{n}.wtscale", 1.0)
+
+
+def convert_fp16(transformer_from_config: nn.Module, state_dict_from_checkpoint: dict):
+    state_dict = transformer_from_config.state_dict()
+    for k in state_dict.keys():
+        if state_dict[k].dtype != state_dict_from_checkpoint[k].dtype:
+            assert (
+                state_dict[k].dtype == torch.float16 and state_dict_from_checkpoint[k].dtype == torch.bfloat16
+            ), f"Unexpected dtype difference for key: {k}, model dtype: {state_dict[k].dtype}, \
+                checkpoint dtype: {state_dict_from_checkpoint[k].dtype}"
+            state_dict_from_checkpoint[k] = torch.nan_to_num(
+                state_dict_from_checkpoint[k].to(torch.float16), nan=0.0, posinf=65504, neginf=-65504
+            )
