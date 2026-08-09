@@ -43,6 +43,15 @@ except ImportError:
 from ..linear import SVDQW4A4Linear
 from ..utils import CPUOffloadManager, fuse_linears
 from .utils import NunchakuModelLoaderMixin, patch_scale_key
+from .flux2_attention_callbacks import (
+    FLUX2_ATTENTION_CALLBACK_API_VERSION,
+    Flux2AttentionInvocation,
+    GENERATED_TOKEN_COUNT_KEY,
+    REFERENCE_TOKEN_COUNTS_KEY,
+    get_attention_callbacks,
+    run_post_attention_callbacks,
+    run_pre_attention_callbacks,
+)
 
 
 def _flux2_kv_causal_attention(
@@ -159,12 +168,14 @@ def _apply_gated_residual(residual: torch.Tensor, gate: torch.Tensor, update: to
 
 
 class NunchakuFlux2Attention(Flux2Attention):
-    def __init__(self, other: Flux2Attention, **kwargs):
+    def __init__(self, other: Flux2Attention, *, block_index: int, **kwargs):
         super(Flux2Attention, self).__init__()
         _copy_attn_attrs(self, other)
         self.added_kv_proj_dim = other.added_kv_proj_dim
         self.added_proj_bias = other.added_proj_bias
         self.fused_projections = True
+        self.block_type = "double"
+        self.block_index = int(block_index)
 
         self.norm_q = other.norm_q
         self.norm_k = other.norm_k
@@ -203,12 +214,35 @@ class NunchakuFlux2Attention(Flux2Attention):
             and hidden_states.is_cuda
         )
         if use_packed_fp16:
+            pre_callbacks, post_callbacks = get_attention_callbacks(kwargs)
             batch_size = hidden_states.shape[0]
             num_txt_tokens = encoder_hidden_states.shape[1]
             num_img_tokens = hidden_states.shape[1]
             num_txt_tokens_pad = _pad256(num_txt_tokens)
             num_img_tokens_pad = _pad256(num_img_tokens)
             num_tokens_pad = num_txt_tokens_pad + num_img_tokens_pad
+            metadata = None
+            if pre_callbacks or post_callbacks:
+                reference_token_counts = kwargs.get(REFERENCE_TOKEN_COUNTS_KEY)
+                generated_token_count = kwargs.get(GENERATED_TOKEN_COUNT_KEY)
+                if not isinstance(reference_token_counts, tuple):
+                    raise TypeError("reference_token_counts must be an explicit tuple when callbacks are active.")
+                if isinstance(generated_token_count, bool) or not isinstance(generated_token_count, int):
+                    raise TypeError("generated_token_count must be an explicit integer when callbacks are active.")
+                metadata = Flux2AttentionInvocation(
+                    block_type=self.block_type,
+                    block_index=self.block_index,
+                    text_token_count=num_txt_tokens,
+                    generated_token_count=generated_token_count,
+                    reference_token_counts=reference_token_counts,
+                    logical_image_token_count=num_img_tokens,
+                    padded_text_token_count=num_txt_tokens_pad,
+                    padded_image_token_count=num_img_tokens_pad,
+                    packed_sequence_length=num_tokens_pad,
+                    batch_size=batch_size,
+                    head_count=self.heads,
+                    head_dimension=self.head_dim,
+                )
             query, key, value, _ = _alloc_packed_qkv(
                 batch_size, self.heads, num_tokens_pad, self.head_dim, hidden_states.device, pad_size=num_tokens_pad
             )
@@ -241,7 +275,15 @@ class NunchakuFlux2Attention(Flux2Attention):
                 dtype=hidden_states.dtype,
                 device=hidden_states.device,
             )
+            if pre_callbacks:
+                query, key, value = run_pre_attention_callbacks(
+                    pre_callbacks, query, key, value, metadata
+                )
             attention_fp16(query, key, value, attention_output, self.head_dim ** (-0.5))
+            if post_callbacks:
+                attention_output = run_post_attention_callbacks(
+                    post_callbacks, attention_output, metadata
+                )
             encoder_hidden_states = attention_output[:, :num_txt_tokens]
             hidden_states = attention_output[:, num_txt_tokens_pad : num_txt_tokens_pad + num_img_tokens]
             encoder_hidden_states = self.to_add_out(encoder_hidden_states)
@@ -339,12 +381,14 @@ class NunchakuFlux2FeedForward(Flux2FeedForward):
 
 
 class NunchakuFlux2ParallelSelfAttention(Flux2ParallelSelfAttention):
-    def __init__(self, other: Flux2ParallelSelfAttention, **kwargs):
+    def __init__(self, other: Flux2ParallelSelfAttention, *, block_index: int, **kwargs):
         super(Flux2ParallelSelfAttention, self).__init__()
         _copy_attn_attrs(self, other)
         self.mlp_ratio = other.mlp_ratio
         self.mlp_hidden_dim = other.mlp_hidden_dim
         self.mlp_mult_factor = other.mlp_mult_factor
+        self.block_type = "single"
+        self.block_index = int(block_index)
 
         # Keep clear parameter names for export/runtime alignment.
         with torch.device("meta"):
@@ -376,11 +420,34 @@ class NunchakuFlux2ParallelSelfAttention(Flux2ParallelSelfAttention):
         num_ref_tokens = int(kwargs.get("num_ref_tokens", 0))
         use_packed_fp16 = kv_cache_mode is None and torch.is_tensor(image_rotary_emb) and image_rotary_emb.ndim == 3 and hidden_states.is_cuda
         if use_packed_fp16:
+            pre_callbacks, post_callbacks = get_attention_callbacks(kwargs)
             batch_size = hidden_states.shape[0]
             num_tokens = hidden_states.shape[1]
             query, key, value, num_tokens_pad = _alloc_packed_qkv(
                 batch_size, self.heads, num_tokens, self.head_dim, hidden_states.device
             )
+            metadata = None
+            if pre_callbacks or post_callbacks:
+                reference_token_counts = kwargs.get(REFERENCE_TOKEN_COUNTS_KEY)
+                generated_token_count = kwargs.get(GENERATED_TOKEN_COUNT_KEY)
+                if not isinstance(reference_token_counts, tuple):
+                    raise TypeError("reference_token_counts must be an explicit tuple when callbacks are active.")
+                if isinstance(generated_token_count, bool) or not isinstance(generated_token_count, int):
+                    raise TypeError("generated_token_count must be an explicit integer when callbacks are active.")
+                metadata = Flux2AttentionInvocation(
+                    block_type=self.block_type,
+                    block_index=self.block_index,
+                    text_token_count=num_txt_tokens,
+                    generated_token_count=generated_token_count,
+                    reference_token_counts=reference_token_counts,
+                    logical_image_token_count=num_tokens - num_txt_tokens,
+                    padded_text_token_count=num_txt_tokens,
+                    padded_image_token_count=num_tokens_pad - num_txt_tokens,
+                    packed_sequence_length=num_tokens_pad,
+                    batch_size=batch_size,
+                    head_count=self.heads,
+                    head_dimension=self.head_dim,
+                )
             fused_qkv_norm_rottary(
                 hidden_states,
                 self.qkv_proj,
@@ -397,7 +464,15 @@ class NunchakuFlux2ParallelSelfAttention(Flux2ParallelSelfAttention):
                 dtype=hidden_states.dtype,
                 device=hidden_states.device,
             )
+            if pre_callbacks:
+                query, key, value = run_pre_attention_callbacks(
+                    pre_callbacks, query, key, value, metadata
+                )
             attention_fp16(query, key, value, attn_output, self.head_dim ** (-0.5))
+            if post_callbacks:
+                attn_output = run_post_attention_callbacks(
+                    post_callbacks, attn_output, metadata
+                )
             attn_output = attn_output[:, :num_tokens]
             mlp_hidden_states = self.mlp_act_fn(self.mlp_fc1(hidden_states))
             return self.out_proj(attn_output) + self.mlp_fc2(mlp_hidden_states)
@@ -432,12 +507,12 @@ class NunchakuFlux2ParallelSelfAttention(Flux2ParallelSelfAttention):
 
 
 class NunchakuFlux2TransformerBlock(Flux2TransformerBlock):
-    def __init__(self, block: Flux2TransformerBlock, **kwargs):
+    def __init__(self, block: Flux2TransformerBlock, *, block_index: int, **kwargs):
         super(Flux2TransformerBlock, self).__init__()
         self.mlp_hidden_dim = block.mlp_hidden_dim
         self.norm1 = block.norm1
         self.norm1_context = block.norm1_context
-        self.attn = NunchakuFlux2Attention(block.attn, **kwargs)
+        self.attn = NunchakuFlux2Attention(block.attn, block_index=block_index, **kwargs)
         self.norm2 = block.norm2
         self.ff = NunchakuFlux2FeedForward(block.ff, **kwargs)
         self.norm2_context = block.norm2_context
@@ -492,10 +567,10 @@ class NunchakuFlux2TransformerBlock(Flux2TransformerBlock):
 
 
 class NunchakuFlux2SingleTransformerBlock(Flux2SingleTransformerBlock):
-    def __init__(self, block: Flux2SingleTransformerBlock, **kwargs):
+    def __init__(self, block: Flux2SingleTransformerBlock, *, block_index: int, **kwargs):
         super(Flux2SingleTransformerBlock, self).__init__()
         self.norm = block.norm
-        self.attn = NunchakuFlux2ParallelSelfAttention(block.attn, **kwargs)
+        self.attn = NunchakuFlux2ParallelSelfAttention(block.attn, block_index=block_index, **kwargs)
 
     def forward(
         self,
@@ -717,9 +792,9 @@ class NunchakuFlux2Transformer2DModel(*_flux2_bases):
 
     def _patch_model(self, **kwargs):
         for i, block in enumerate(self.transformer_blocks):
-            self.transformer_blocks[i] = NunchakuFlux2TransformerBlock(block, **kwargs)
+            self.transformer_blocks[i] = NunchakuFlux2TransformerBlock(block, block_index=i, **kwargs)
         for i, block in enumerate(self.single_transformer_blocks):
-            self.single_transformer_blocks[i] = NunchakuFlux2SingleTransformerBlock(block, **kwargs)
+            self.single_transformer_blocks[i] = NunchakuFlux2SingleTransformerBlock(block, block_index=i, **kwargs)
         self.offload = False
         self.transformer_block_offload_manager = None
         self.single_transformer_block_offload_manager = None
