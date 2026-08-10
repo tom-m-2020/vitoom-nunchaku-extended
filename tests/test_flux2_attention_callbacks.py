@@ -10,6 +10,7 @@ MODULE_PATH = (
     pathlib.Path(__file__).resolve().parents[1]
     / "nunchaku/models/transformers/flux2_attention_callbacks.py"
 )
+TRANSFORMER_PATH = MODULE_PATH.with_name("transformer_flux2.py")
 SPEC = importlib.util.spec_from_file_location("flux2_attention_callbacks_test", MODULE_PATH)
 CALLBACKS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CALLBACKS)
@@ -56,6 +57,107 @@ class Flux2AttentionCallbackTests(unittest.TestCase):
         self.assertEqual(double.logical_image_token_count, 23)
         self.assertEqual(double.packed_sequence_length, 512)
         self.assertNotEqual(double.logical_image_token_count, double.padded_image_token_count)
+
+    def test_single_stream_no_references_keeps_image_and_total_distinct(self):
+        invocation = CALLBACKS.Flux2AttentionInvocation(
+            block_type="single",
+            block_index=0,
+            text_token_count=512,
+            generated_token_count=4096,
+            reference_token_counts=(),
+            logical_image_token_count=4096,
+            padded_text_token_count=512,
+            padded_image_token_count=4096,
+            packed_sequence_length=4608,
+            batch_size=1,
+            head_count=32,
+            head_dimension=128,
+        )
+        self.assertEqual(invocation.logical_image_token_count, 4096)
+        self.assertEqual(
+            invocation.text_token_count + invocation.logical_image_token_count,
+            4608,
+        )
+        self.assertEqual(invocation.packed_sequence_length, 4608)
+
+    def test_single_stream_references_preserve_ordered_logical_counts(self):
+        invocation = CALLBACKS.Flux2AttentionInvocation(
+            block_type="single",
+            block_index=0,
+            text_token_count=512,
+            generated_token_count=4096,
+            reference_token_counts=(1024, 2048),
+            logical_image_token_count=7168,
+            padded_text_token_count=512,
+            padded_image_token_count=7168,
+            packed_sequence_length=7680,
+            batch_size=1,
+            head_count=32,
+            head_dimension=128,
+        )
+        self.assertEqual(invocation.reference_token_counts, (1024, 2048))
+        self.assertEqual(invocation.logical_image_token_count, 7168)
+        self.assertEqual(
+            invocation.text_token_count + invocation.logical_image_token_count,
+            7680,
+        )
+
+    def test_single_stream_packed_length_may_exceed_logical_total(self):
+        invocation = CALLBACKS.Flux2AttentionInvocation(
+            block_type="single",
+            block_index=0,
+            text_token_count=512,
+            generated_token_count=4096,
+            reference_token_counts=(1,),
+            logical_image_token_count=4097,
+            padded_text_token_count=512,
+            padded_image_token_count=4352,
+            packed_sequence_length=4864,
+            batch_size=1,
+            head_count=32,
+            head_dimension=128,
+        )
+        logical_total = (
+            invocation.text_token_count + invocation.logical_image_token_count
+        )
+        self.assertEqual(logical_total, 4609)
+        self.assertGreater(invocation.packed_sequence_length, logical_total)
+
+    def test_double_stream_metadata_contract_is_unchanged(self):
+        invocation = CALLBACKS.Flux2AttentionInvocation(
+            block_type="double",
+            block_index=7,
+            text_token_count=512,
+            generated_token_count=4096,
+            reference_token_counts=(1024,),
+            logical_image_token_count=5120,
+            padded_text_token_count=512,
+            padded_image_token_count=5120,
+            packed_sequence_length=5632,
+            batch_size=1,
+            head_count=32,
+            head_dimension=128,
+        )
+        self.assertEqual(invocation.logical_image_token_count, 5120)
+        self.assertEqual(invocation.padded_text_token_count, 512)
+        self.assertEqual(invocation.padded_image_token_count, 5120)
+        self.assertEqual(invocation.packed_sequence_length, 5632)
+
+    def test_single_stream_caller_supplies_the_logical_text_count(self):
+        source = TRANSFORMER_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            "num_txt_tokens=0 if text_seq_len is None else text_seq_len,",
+            source,
+        )
+        self.assertIn("False, num_txt_tokens,", source)
+        self.assertIn(
+            "generated_token_count + sum(reference_token_counts)",
+            source,
+        )
+        self.assertNotIn(
+            "logical_image_token_count=num_tokens - num_txt_tokens",
+            source,
+        )
 
     def test_no_callbacks_preserves_identity_and_values(self):
         q, k, v = self.tensors()

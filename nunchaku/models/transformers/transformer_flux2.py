@@ -440,7 +440,9 @@ class NunchakuFlux2ParallelSelfAttention(Flux2ParallelSelfAttention):
                     text_token_count=num_txt_tokens,
                     generated_token_count=generated_token_count,
                     reference_token_counts=reference_token_counts,
-                    logical_image_token_count=num_tokens - num_txt_tokens,
+                    logical_image_token_count=(
+                        generated_token_count + sum(reference_token_counts)
+                    ),
                     padded_text_token_count=num_txt_tokens,
                     padded_image_token_count=num_tokens_pad - num_txt_tokens,
                     packed_sequence_length=num_tokens_pad,
@@ -594,6 +596,7 @@ class NunchakuFlux2SingleTransformerBlock(Flux2SingleTransformerBlock):
         attn_output = self.attn(
             hidden_states=norm_hidden_states,
             image_rotary_emb=image_rotary_emb,
+            num_txt_tokens=0 if text_seq_len is None else text_seq_len,
             **joint_attention_kwargs,
         )
 
@@ -937,6 +940,7 @@ class NunchakuFlux2Transformer2DModel(*_flux2_bases):
         single_args = (
             hidden_states, None,
             single_stream_mod, rotary_emb_single, joint_attention_kwargs,
+            False, num_txt_tokens,
         )
         hidden_states = self._run_blocks(
             self.single_transformer_blocks, offload_mgr, single_args, use_grad_ckpt
