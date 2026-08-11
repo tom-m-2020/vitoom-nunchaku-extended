@@ -32,6 +32,7 @@ def metadata(block_type="double", block_index=3, refs=(5, 7)):
         text_token_count=text,
         generated_token_count=generated,
         reference_token_counts=refs,
+        reference_spatial_shapes=tuple((1, count) for count in refs),
         logical_image_token_count=image,
         padded_text_token_count=padded_text,
         padded_image_token_count=padded_image,
@@ -47,7 +48,7 @@ class Flux2AttentionCallbackTests(unittest.TestCase):
         return tuple(torch.ones((1, 2, 8, 4)) * value for value in (1, 2, 3))
 
     def test_capability_and_metadata_layouts(self):
-        self.assertEqual(CALLBACKS.FLUX2_ATTENTION_CALLBACK_API_VERSION, 1)
+        self.assertEqual(CALLBACKS.FLUX2_ATTENTION_CALLBACK_API_VERSION, 2)
         double = metadata("double", 4, (5, 7))
         single = metadata("single", 9, ())
         self.assertEqual((double.block_type, double.block_index), ("double", 4))
@@ -65,6 +66,7 @@ class Flux2AttentionCallbackTests(unittest.TestCase):
             text_token_count=512,
             generated_token_count=4096,
             reference_token_counts=(),
+            reference_spatial_shapes=(),
             logical_image_token_count=4096,
             padded_text_token_count=512,
             padded_image_token_count=4096,
@@ -87,6 +89,7 @@ class Flux2AttentionCallbackTests(unittest.TestCase):
             text_token_count=512,
             generated_token_count=4096,
             reference_token_counts=(1024, 2048),
+            reference_spatial_shapes=((32, 32), (32, 64)),
             logical_image_token_count=7168,
             padded_text_token_count=512,
             padded_image_token_count=7168,
@@ -109,6 +112,7 @@ class Flux2AttentionCallbackTests(unittest.TestCase):
             text_token_count=512,
             generated_token_count=4096,
             reference_token_counts=(1,),
+            reference_spatial_shapes=((1, 1),),
             logical_image_token_count=4097,
             padded_text_token_count=512,
             padded_image_token_count=4352,
@@ -130,6 +134,7 @@ class Flux2AttentionCallbackTests(unittest.TestCase):
             text_token_count=512,
             generated_token_count=4096,
             reference_token_counts=(1024,),
+            reference_spatial_shapes=((32, 32),),
             logical_image_token_count=5120,
             padded_text_token_count=512,
             padded_image_token_count=5120,

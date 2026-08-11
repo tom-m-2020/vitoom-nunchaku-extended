@@ -4,6 +4,7 @@ Baseline wheel: `nunchaku-1.3.0.dev20260629+cu13.0torch2.11-cp313-cp313-win_amd6
 
 - Added generic ordered FLUX.2 pre-attention and post-attention callbacks.
 - Added immutable invocation metadata and strict replacement validation.
+- API v2 adds ordered reference token-grid shapes, validated against token counts.
 - Added immutable double/single block identity at backend construction.
 - No Enhancer policy, weighting, masks, schedules, or identity logic.
 - No compiled-extension changes.

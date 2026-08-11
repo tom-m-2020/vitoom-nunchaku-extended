@@ -47,6 +47,7 @@ from .flux2_attention_callbacks import (
     FLUX2_ATTENTION_CALLBACK_API_VERSION,
     Flux2AttentionInvocation,
     GENERATED_TOKEN_COUNT_KEY,
+    REFERENCE_SPATIAL_SHAPES_KEY,
     REFERENCE_TOKEN_COUNTS_KEY,
     get_attention_callbacks,
     run_post_attention_callbacks,
@@ -224,9 +225,12 @@ class NunchakuFlux2Attention(Flux2Attention):
             metadata = None
             if pre_callbacks or post_callbacks:
                 reference_token_counts = kwargs.get(REFERENCE_TOKEN_COUNTS_KEY)
+                reference_spatial_shapes = kwargs.get(REFERENCE_SPATIAL_SHAPES_KEY)
                 generated_token_count = kwargs.get(GENERATED_TOKEN_COUNT_KEY)
                 if not isinstance(reference_token_counts, tuple):
                     raise TypeError("reference_token_counts must be an explicit tuple when callbacks are active.")
+                if not isinstance(reference_spatial_shapes, tuple):
+                    raise TypeError("reference_spatial_shapes must be an explicit tuple when callbacks are active.")
                 if isinstance(generated_token_count, bool) or not isinstance(generated_token_count, int):
                     raise TypeError("generated_token_count must be an explicit integer when callbacks are active.")
                 metadata = Flux2AttentionInvocation(
@@ -235,6 +239,7 @@ class NunchakuFlux2Attention(Flux2Attention):
                     text_token_count=num_txt_tokens,
                     generated_token_count=generated_token_count,
                     reference_token_counts=reference_token_counts,
+                    reference_spatial_shapes=reference_spatial_shapes,
                     logical_image_token_count=num_img_tokens,
                     padded_text_token_count=num_txt_tokens_pad,
                     padded_image_token_count=num_img_tokens_pad,
@@ -429,9 +434,12 @@ class NunchakuFlux2ParallelSelfAttention(Flux2ParallelSelfAttention):
             metadata = None
             if pre_callbacks or post_callbacks:
                 reference_token_counts = kwargs.get(REFERENCE_TOKEN_COUNTS_KEY)
+                reference_spatial_shapes = kwargs.get(REFERENCE_SPATIAL_SHAPES_KEY)
                 generated_token_count = kwargs.get(GENERATED_TOKEN_COUNT_KEY)
                 if not isinstance(reference_token_counts, tuple):
                     raise TypeError("reference_token_counts must be an explicit tuple when callbacks are active.")
+                if not isinstance(reference_spatial_shapes, tuple):
+                    raise TypeError("reference_spatial_shapes must be an explicit tuple when callbacks are active.")
                 if isinstance(generated_token_count, bool) or not isinstance(generated_token_count, int):
                     raise TypeError("generated_token_count must be an explicit integer when callbacks are active.")
                 metadata = Flux2AttentionInvocation(
@@ -440,6 +448,7 @@ class NunchakuFlux2ParallelSelfAttention(Flux2ParallelSelfAttention):
                     text_token_count=num_txt_tokens,
                     generated_token_count=generated_token_count,
                     reference_token_counts=reference_token_counts,
+                    reference_spatial_shapes=reference_spatial_shapes,
                     logical_image_token_count=(
                         generated_token_count + sum(reference_token_counts)
                     ),

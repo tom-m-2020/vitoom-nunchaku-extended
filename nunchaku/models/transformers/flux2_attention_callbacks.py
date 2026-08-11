@@ -10,11 +10,12 @@ from dataclasses import dataclass
 import torch
 
 
-FLUX2_ATTENTION_CALLBACK_API_VERSION = 1
+FLUX2_ATTENTION_CALLBACK_API_VERSION = 2
 PRE_ATTENTION_CALLBACKS_KEY = "pre_attention_callbacks"
 POST_ATTENTION_CALLBACKS_KEY = "post_attention_callbacks"
 GENERATED_TOKEN_COUNT_KEY = "generated_token_count"
 REFERENCE_TOKEN_COUNTS_KEY = "reference_token_counts"
+REFERENCE_SPATIAL_SHAPES_KEY = "reference_spatial_shapes"
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,7 @@ class Flux2AttentionInvocation:
     text_token_count: int
     generated_token_count: int
     reference_token_counts: tuple[int, ...]
+    reference_spatial_shapes: tuple[tuple[int, int], ...]
     logical_image_token_count: int
     padded_text_token_count: int
     padded_image_token_count: int
@@ -56,6 +58,30 @@ class Flux2AttentionInvocation:
             for value in self.reference_token_counts
         ):
             raise ValueError("reference_token_counts must be a tuple of positive integers.")
+        if (
+            not isinstance(self.reference_spatial_shapes, tuple)
+            or len(self.reference_spatial_shapes) != len(self.reference_token_counts)
+        ):
+            raise ValueError(
+                "reference_spatial_shapes must contain one (height, width) tuple "
+                "for each reference."
+            )
+        for index, (shape, count) in enumerate(
+            zip(self.reference_spatial_shapes, self.reference_token_counts, strict=True)
+        ):
+            if (
+                not isinstance(shape, tuple)
+                or len(shape) != 2
+                or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in shape)
+            ):
+                raise ValueError(
+                    f"reference_spatial_shapes[{index}] must be a pair of positive integers."
+                )
+            if shape[0] * shape[1] != count:
+                raise ValueError(
+                    f"reference_spatial_shapes[{index}] product does not match "
+                    f"reference_token_counts[{index}]: {shape[0]} * {shape[1]} != {count}."
+                )
         expected_image = self.generated_token_count + sum(self.reference_token_counts)
         if self.logical_image_token_count != expected_image:
             raise ValueError(
@@ -136,6 +162,7 @@ __all__ = [
     "POST_ATTENTION_CALLBACKS_KEY",
     "PRE_ATTENTION_CALLBACKS_KEY",
     "REFERENCE_TOKEN_COUNTS_KEY",
+    "REFERENCE_SPATIAL_SHAPES_KEY",
     "get_attention_callbacks",
     "run_post_attention_callbacks",
     "run_pre_attention_callbacks",
