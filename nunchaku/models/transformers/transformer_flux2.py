@@ -46,6 +46,7 @@ from .utils import NunchakuModelLoaderMixin, patch_scale_key
 from .flux2_attention_callbacks import (
     FLUX2_ATTENTION_CALLBACK_API_VERSION,
     Flux2AttentionInvocation,
+    GENERATED_SPATIAL_SHAPE_KEY,
     GENERATED_TOKEN_COUNT_KEY,
     REFERENCE_SPATIAL_SHAPES_KEY,
     REFERENCE_TOKEN_COUNTS_KEY,
@@ -227,17 +228,21 @@ class NunchakuFlux2Attention(Flux2Attention):
                 reference_token_counts = kwargs.get(REFERENCE_TOKEN_COUNTS_KEY)
                 reference_spatial_shapes = kwargs.get(REFERENCE_SPATIAL_SHAPES_KEY)
                 generated_token_count = kwargs.get(GENERATED_TOKEN_COUNT_KEY)
+                generated_spatial_shape = kwargs.get(GENERATED_SPATIAL_SHAPE_KEY)
                 if not isinstance(reference_token_counts, tuple):
                     raise TypeError("reference_token_counts must be an explicit tuple when callbacks are active.")
                 if not isinstance(reference_spatial_shapes, tuple):
                     raise TypeError("reference_spatial_shapes must be an explicit tuple when callbacks are active.")
                 if isinstance(generated_token_count, bool) or not isinstance(generated_token_count, int):
                     raise TypeError("generated_token_count must be an explicit integer when callbacks are active.")
+                if not isinstance(generated_spatial_shape, tuple):
+                    raise TypeError("generated_spatial_shape must be an explicit tuple when callbacks are active.")
                 metadata = Flux2AttentionInvocation(
                     block_type=self.block_type,
                     block_index=self.block_index,
                     text_token_count=num_txt_tokens,
                     generated_token_count=generated_token_count,
+                    generated_spatial_shape=generated_spatial_shape,
                     reference_token_counts=reference_token_counts,
                     reference_spatial_shapes=reference_spatial_shapes,
                     logical_image_token_count=num_img_tokens,
@@ -436,17 +441,21 @@ class NunchakuFlux2ParallelSelfAttention(Flux2ParallelSelfAttention):
                 reference_token_counts = kwargs.get(REFERENCE_TOKEN_COUNTS_KEY)
                 reference_spatial_shapes = kwargs.get(REFERENCE_SPATIAL_SHAPES_KEY)
                 generated_token_count = kwargs.get(GENERATED_TOKEN_COUNT_KEY)
+                generated_spatial_shape = kwargs.get(GENERATED_SPATIAL_SHAPE_KEY)
                 if not isinstance(reference_token_counts, tuple):
                     raise TypeError("reference_token_counts must be an explicit tuple when callbacks are active.")
                 if not isinstance(reference_spatial_shapes, tuple):
                     raise TypeError("reference_spatial_shapes must be an explicit tuple when callbacks are active.")
                 if isinstance(generated_token_count, bool) or not isinstance(generated_token_count, int):
                     raise TypeError("generated_token_count must be an explicit integer when callbacks are active.")
+                if not isinstance(generated_spatial_shape, tuple):
+                    raise TypeError("generated_spatial_shape must be an explicit tuple when callbacks are active.")
                 metadata = Flux2AttentionInvocation(
                     block_type=self.block_type,
                     block_index=self.block_index,
                     text_token_count=num_txt_tokens,
                     generated_token_count=generated_token_count,
+                    generated_spatial_shape=generated_spatial_shape,
                     reference_token_counts=reference_token_counts,
                     reference_spatial_shapes=reference_spatial_shapes,
                     logical_image_token_count=(

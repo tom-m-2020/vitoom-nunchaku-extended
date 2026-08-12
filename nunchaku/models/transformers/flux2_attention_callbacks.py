@@ -10,10 +10,11 @@ from dataclasses import dataclass
 import torch
 
 
-FLUX2_ATTENTION_CALLBACK_API_VERSION = 2
+FLUX2_ATTENTION_CALLBACK_API_VERSION = 3
 PRE_ATTENTION_CALLBACKS_KEY = "pre_attention_callbacks"
 POST_ATTENTION_CALLBACKS_KEY = "post_attention_callbacks"
 GENERATED_TOKEN_COUNT_KEY = "generated_token_count"
+GENERATED_SPATIAL_SHAPE_KEY = "generated_spatial_shape"
 REFERENCE_TOKEN_COUNTS_KEY = "reference_token_counts"
 REFERENCE_SPATIAL_SHAPES_KEY = "reference_spatial_shapes"
 
@@ -24,6 +25,7 @@ class Flux2AttentionInvocation:
     block_index: int
     text_token_count: int
     generated_token_count: int
+    generated_spatial_shape: tuple[int, int]
     reference_token_counts: tuple[int, ...]
     reference_spatial_shapes: tuple[tuple[int, int], ...]
     logical_image_token_count: int
@@ -58,6 +60,21 @@ class Flux2AttentionInvocation:
             for value in self.reference_token_counts
         ):
             raise ValueError("reference_token_counts must be a tuple of positive integers.")
+        if (
+            not isinstance(self.generated_spatial_shape, tuple)
+            or len(self.generated_spatial_shape) != 2
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                for value in self.generated_spatial_shape
+            )
+        ):
+            raise ValueError("generated_spatial_shape must be a pair of positive integers.")
+        if self.generated_spatial_shape[0] * self.generated_spatial_shape[1] != self.generated_token_count:
+            raise ValueError(
+                "generated_spatial_shape product does not match generated_token_count: "
+                f"{self.generated_spatial_shape[0]} * {self.generated_spatial_shape[1]} "
+                f"!= {self.generated_token_count}."
+            )
         if (
             not isinstance(self.reference_spatial_shapes, tuple)
             or len(self.reference_spatial_shapes) != len(self.reference_token_counts)
@@ -159,6 +176,7 @@ __all__ = [
     "FLUX2_ATTENTION_CALLBACK_API_VERSION",
     "Flux2AttentionInvocation",
     "GENERATED_TOKEN_COUNT_KEY",
+    "GENERATED_SPATIAL_SHAPE_KEY",
     "POST_ATTENTION_CALLBACKS_KEY",
     "PRE_ATTENTION_CALLBACKS_KEY",
     "REFERENCE_TOKEN_COUNTS_KEY",
