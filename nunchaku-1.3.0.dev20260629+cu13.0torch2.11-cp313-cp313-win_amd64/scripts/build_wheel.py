@@ -1,4 +1,6 @@
-"""Build the callback-capable derivative from an authoritative Vitoom wheel."""
+"""Build a callback-capable derivative from a verified Vitoom wheel."""
+
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -8,16 +10,18 @@ import tempfile
 import zipfile
 
 from rebuild_record import rebuild_record
-
-
-EXPECTED_VERSION = "1.3.0.dev20260629+cu13.0torch2.11"
-DERIVATIVE_VERSION = EXPECTED_VERSION + ".kleincallback2"
-EXPECTED_WHEEL_SHA256 = "F8F9E7D3DE46603F4772F96FA68A8F02C57E0DA511CD274FC9EF6FADAEC62025"
-EXPECTED_EXTENSION_SHA256 = "7B1ACA262EC9AA65E1226E3768109FB20866E8E94F5A4BF0D2D832DCCAAD29A9"
-OVERLAYS = (
-    Path("nunchaku/models/transformers/transformer_flux2.py"),
-    Path("nunchaku/models/transformers/flux2_attention_callbacks.py"),
+from wheel_profiles import (
+    CALLBACKS_PATH,
+    SOURCE_1_3_SHA256,
+    TRANSFORMER_PATH,
+    WHEELS,
+    normalized_sha256,
+    patch_1_4,
 )
+
+
+DERIVATIVE_SUFFIX = ".kleincallback2"
+FIXED_ZIP_TIME = (2026, 1, 1, 0, 0, 0)
 
 
 def sha256(path: Path) -> str:
@@ -28,48 +32,103 @@ def sha256(path: Path) -> str:
     return digest.hexdigest().upper()
 
 
+def _metadata_directory(root: Path, version: str) -> Path:
+    expected = root / f"nunchaku-{version}.dist-info"
+    if not expected.is_dir():
+        raise ValueError(f"Input wheel lacks expected metadata directory {expected.name}.")
+    return expected
+
+
+def _verify_extension(root: Path, expected_hash: str) -> Path:
+    extensions = [
+        path
+        for path in (root / "nunchaku").iterdir()
+        if path.is_file() and path.name.startswith("_C") and path.suffix in {".pyd", ".so"}
+    ]
+    if len(extensions) != 1:
+        raise ValueError("Input wheel must contain exactly one compiled Nunchaku extension.")
+    if sha256(extensions[0]) != expected_hash:
+        raise ValueError("Compiled extension differs from the verified upstream wheel.")
+    return extensions[0]
+
+
+def _write_deterministic_wheel(root: Path, output: Path) -> None:
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+            relative = path.relative_to(root).as_posix()
+            info = zipfile.ZipInfo(relative, FIXED_ZIP_TIME)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = (0o644 & 0xFFFF) << 16
+            archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+
+
 def build(input_wheel: Path, output_directory: Path) -> Path:
-    if sha256(input_wheel) != EXPECTED_WHEEL_SHA256:
-        raise ValueError("Input wheel SHA-256 does not match the qualified Vitoom wheel.")
+    wheel_hash = sha256(input_wheel)
+    profile = WHEELS.get(wheel_hash)
+    if profile is None:
+        raise ValueError(
+            f"Unsupported input wheel SHA-256 {wheel_hash}; refusing an unknown distribution."
+        )
+
     source_root = Path(__file__).resolve().parents[1]
     output_directory.mkdir(parents=True, exist_ok=True)
+    version = profile["version"]
+    derivative_version = version + DERIVATIVE_SUFFIX
+
     with tempfile.TemporaryDirectory(prefix="nunchaku-wheel-") as temporary:
         root = Path(temporary)
         with zipfile.ZipFile(input_wheel) as archive:
             archive.extractall(root)
 
-        old_dist = root / f"nunchaku-{EXPECTED_VERSION}.dist-info"
-        new_dist = root / f"nunchaku-{DERIVATIVE_VERSION}.dist-info"
-        if not old_dist.is_dir():
-            raise ValueError(f"Input wheel lacks expected metadata directory {old_dist.name}.")
+        old_dist = _metadata_directory(root, version)
+        transformer = root / TRANSFORMER_PATH
+        if not transformer.is_file():
+            raise ValueError(f"Input wheel lacks {TRANSFORMER_PATH.as_posix()}.")
+
+        if profile["profile"] == "flux2-1.3":
+            if normalized_sha256(transformer.read_bytes()) != SOURCE_1_3_SHA256:
+                raise ValueError("FLUX.2 1.3 source hash is not verified.")
+            transformer.write_bytes((source_root / TRANSFORMER_PATH).read_bytes())
+        elif profile["profile"] == "flux2-1.4":
+            transformer.write_bytes(patch_1_4(transformer.read_bytes()))
+        else:
+            raise ValueError(f"Unknown internal patch profile {profile['profile']!r}.")
+
+        callback_source = source_root / CALLBACKS_PATH
+        if not callback_source.is_file():
+            raise FileNotFoundError(f"Missing maintained callback module {callback_source}.")
+        callback_destination = root / CALLBACKS_PATH
+        callback_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(callback_source, callback_destination)
+
+        extension = _verify_extension(root, profile["extension"])
+        extension_hash = sha256(extension)
+
+        new_dist = root / f"nunchaku-{derivative_version}.dist-info"
         old_dist.rename(new_dist)
         metadata = new_dist / "METADATA"
         text = metadata.read_text(encoding="utf-8")
-        expected_line = f"Version: {EXPECTED_VERSION}"
-        if expected_line not in text:
-            raise ValueError("Input METADATA version does not match the qualified wheel.")
-        metadata.write_text(text.replace(expected_line, f"Version: {DERIVATIVE_VERSION}", 1), encoding="utf-8")
-
-        for relative in OVERLAYS:
-            source = source_root / relative
-            if not source.is_file():
-                raise FileNotFoundError(f"Missing maintained overlay {source}.")
-            destination = root / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
-
-        extensions = list((root / "nunchaku").glob("_C*.pyd"))
-        if len(extensions) != 1 or sha256(extensions[0]) != EXPECTED_EXTENSION_SHA256:
-            raise ValueError("Compiled extension is absent or differs from the qualified wheel.")
+        expected_line = f"Version: {version}"
+        if text.count(expected_line) != 1:
+            raise ValueError("Input METADATA version does not match the verified wheel.")
+        metadata.write_text(
+            text.replace(expected_line, f"Version: {derivative_version}", 1),
+            encoding="utf-8",
+            newline="\n",
+        )
 
         rebuild_record(root, new_dist)
         tags = input_wheel.name[:-4].split("-")[-3:]
-        output = output_directory / f"nunchaku-{DERIVATIVE_VERSION}-{'-'.join(tags)}.whl"
+        output = output_directory / f"nunchaku-{derivative_version}-{'-'.join(tags)}.whl"
         if output.resolve() == input_wheel.resolve():
             raise ValueError("Refusing to overwrite the authoritative input wheel.")
-        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-            for path in sorted(item for item in root.rglob("*") if item.is_file()):
-                archive.write(path, path.relative_to(root).as_posix())
+        _write_deterministic_wheel(root, output)
+
+        with zipfile.ZipFile(output) as archive:
+            extension_name = extension.relative_to(root).as_posix()
+            if hashlib.sha256(archive.read(extension_name)).hexdigest().upper() != extension_hash:
+                raise RuntimeError("Compiled extension changed while writing the derivative wheel.")
         return output
 
 
