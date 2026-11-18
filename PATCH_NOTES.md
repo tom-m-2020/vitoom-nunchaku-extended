@@ -1,21 +1,33 @@
-# Project-maintained changes
+# FLUX.2 callback patch notes
 
-Baseline wheel: `nunchaku-1.3.0.dev20260629+cu13.0torch2.11-cp313-cp313-win_amd64.whl`
+## Current maintained behavior
 
-- Added generic ordered FLUX.2 pre-attention and post-attention callbacks.
-- Added immutable invocation metadata and strict replacement validation.
-- API v2 adds ordered reference token-grid shapes, validated against token counts.
-- API v3 adds the generated token-grid shape, validated against the generated token count.
-- Added immutable double/single block identity at backend construction.
-- No Enhancer policy, weighting, masks, schedules, or identity logic.
+- Generic ordered FLUX.2 pre-attention and post-attention callbacks.
+- Immutable callback invocation metadata and strict replacement validation.
+- Ordered reference token-grid shapes, validated against reference token counts.
+- Generated token-grid shape, validated against the generated token count.
+- Immutable double/single block identity assigned during backend patching.
 - No compiled-extension changes.
+- No consumer policy such as Enhancer weighting, masks, schedules, Direct K/V,
+  Identity Feature Transfer, or LoRA composition.
 
-Modified upstream Python symbol surface:
+Maintained Python surfaces:
 
-- `NunchakuFlux2Attention`
-- `NunchakuFlux2ParallelSelfAttention`
-- `NunchakuFlux2TransformerBlock`
-- `NunchakuFlux2SingleTransformerBlock`
-- `NunchakuFlux2Transformer2DModel._patch_model`
+- `patches/flux2/common/flux2_attention_callbacks.py`
+- `patches/flux2/v1_3/transformer_flux2.py`
+- The FLUX.2 1.4 transformation in `scripts/wheel_profiles.py`
 
-Added module: `nunchaku.models.transformers.flux2_attention_callbacks`.
+Output module added to every derivative wheel:
+`nunchaku.models.transformers.flux2_attention_callbacks`.
+
+## Historical releases
+
+- `v1.0.0`: fixed the single-stream callback metadata bug without weakening
+  validation.
+- `v1.1.0`: API v2 added ordered reference token-grid shapes.
+- `v1.2.0`: API v3 added the generated token-grid shape.
+
+The proposed `v1.3.0` repository release does not change callback API behavior.
+It promotes the existing five-profile repacker to the repository root, removes
+the redundant extracted upstream wheel tree, and documents the qualified
+Nunchaku 1.4.1 Windows artifact.

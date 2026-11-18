@@ -1,0 +1,12 @@
+vitoom-nunchaku-extended
+
+Copyright 2026 Tom-M and contributors.
+
+This project contains Python modifications derived from Nunchaku components
+distributed under the Apache License 2.0. Authoritative input wheels are
+published by tonera/vitoom-nunchaku and contain upstream Nunchaku code and
+compiled extensions. Derivative wheels retain the upstream license file.
+
+The project-maintained changes add the FLUX.2 Klein attention callback API v3.
+The repacker preserves the upstream compiled extension byte-for-byte and does
+not represent that extension as independently rebuilt or source-reproducible.

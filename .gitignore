@@ -1,4 +1,10 @@
-__pycache__
-*.pyc
-**/nunchaku/_C*.pyd
-**/nunchaku/_C*.*.pyd
+__pycache__/
+*.py[cod]
+*.whl
+dist/
+build/
+tmp/
+.pytest_cache/
+.ruff_cache/
+*.pyd
+*.so
